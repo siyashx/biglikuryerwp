@@ -36,20 +36,21 @@ app.post('/webhook', async (req, res) => {
     const { event, data } = req.body || {};
     if (event !== 'messages-group.received') return;
 
-    const remoteJid   = data?.key?.remoteJid;
-    const participant = data?.key?.participant; // "...@s.whatsapp.net"
-    const msgId       = data?.key?.id;
-    const fromMe      = !!data?.key?.fromMe;
-    const msg         = data?.message || {};
+    const remoteJid = data?.key?.remoteJid;
+    const participant = data?.key?.participant; // "994...[:device]@s.whatsapp.net"
+    const msgId = data?.key?.id;
+    const fromMe = !!data?.key?.fromMe;
+    const msg = data?.message || {};
 
     if (!remoteJid || !GROUP_MAP[remoteJid]) return;
     if (fromMe) return;
 
     const { admin: adminMsisdn, courier: courierMsisdn } = GROUP_MAP[remoteJid];
 
-    // göndərənin rəqəmləri
-    const senderDigits = String(participant || '').replace(/@.*/, '').replace(/\D/g, '');
-    const isAdmin = senderDigits.endsWith(String(adminMsisdn || ''));
+    // göndərənin MSISDN-ni :device suffix-siz çıxar
+    const m = String(participant || '').match(/^(\d+)(?::\d+)?@s\.whatsapp\.net$/);
+    const senderMsisdn = m ? m[1] : '';   // məsələn: "994556165535"
+    const isAdmin = senderMsisdn === String(adminMsisdn || '');
 
     if (!isAdmin) return; // yalnız adminin sablon mesajını emal edirik
 
@@ -77,14 +78,23 @@ app.post('/webhook', async (req, res) => {
 
     const body = `Sifarişiniz ${courierHuman} tərəfindən qəbul edildi.`;
 
-    // (istəsən limit qoya bilərsən: recipients.slice(0, 30))
-    const tasks = recipients.map(num => sendText({ to: num, text: body }));
+    console.log('📤 Göndəriləcək nömrələr:', recipients);
+    const tasks = recipients.map(num => sendText({ to: '+' + num, text: body })); // +994...
     const results = await Promise.allSettled(tasks);
 
     const ok = results.filter(r => r.status === 'fulfilled').length;
     const fail = results.length - ok;
 
-    console.log(`✅ Göndərildi: ${ok}, ❌ Uğursuz: ${fail}`, { group: remoteJid, total: results.length });
+    results.forEach((r, i) => {
+      const to = recipients[i];
+      if (r.status === 'fulfilled') {
+        console.log('✅ OK =>', to, r.value);
+      } else {
+        console.error('❌ FAIL =>', to, r.reason?.response?.data || r.reason?.message || r.reason);
+      }
+    });
+
+    console.log(`📊 Nəticə — ✅ ${ok} | ❌ ${fail} | cəmi ${results.length}`, { group: remoteJid });
   } catch (e) {
     console.error('Webhook handler error:', e?.response?.data || e.message);
   }
