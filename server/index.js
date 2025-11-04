@@ -53,10 +53,10 @@ app.post('/webhook', async (req, res) => {
     const key = env.key || {};
     const msg = env.message || {};
 
-    const remoteJid   = key.remoteJid || env.remoteJid;
+    const remoteJid = key.remoteJid || env.remoteJid;
     const participant = key.participant || env.participant; // "994...[:device]@s.whatsapp.net"
-    const msgId       = key.id || env.id;
-    const fromMe      = !!(key.fromMe || env.fromMe);
+    const msgId = key.id || env.id;
+    const fromMe = !!(key.fromMe || env.fromMe);
 
     if (!remoteJid || !GROUP_MAP[remoteJid]) {
       console.log('ℹ️  Skip (unknown group):', { got: remoteJid, known: Object.keys(GROUP_MAP) });
@@ -114,23 +114,47 @@ app.post('/webhook', async (req, res) => {
 
     console.log('📤 Göndəriləcək nömrələr:', recipients);
 
-    // Wasender +994… formatını sevir
-    const tasks = recipients.map(num => sendText({ to: '+' + num, text: body }));
-    const results = await Promise.allSettled(tasks);
+    const GAP_MS_DEFAULT = Number(process.env.RATE_GAP_MS || 5500); // 5.5s default
+    const results = [];
 
-    let ok = 0, fail = 0;
-    results.forEach((r, i) => {
-      const to = recipients[i];
-      if (r.status === 'fulfilled') {
-        ok++;
-        console.log('✅ OK =>', to, r.value);
-      } else {
-        fail++;
-        console.error('❌ FAIL =>', to, r.reason?.response?.data || r.reason?.message || r.reason);
+    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    for (const num of recipients) {
+      let attempt = 0;
+      let sent = false;
+      while (!sent && attempt < 3) {
+        attempt++;
+        try {
+          const r = await sendText({ to: '+' + num, text: body });
+          console.log('✅ OK =>', num, r);
+          results.push({ to: num, ok: true, r });
+          sent = true;
+        } catch (e) {
+          const payload = e?.response?.data || e?.message || e;
+          const retryAfterSec = Number(payload?.retry_after || 0);
+          console.error(`❌ FAIL (try ${attempt}) =>`, num, payload);
+
+          if (retryAfterSec > 0) {
+            // Wasender konkret “retry_after” veribsə ona görə gözlə
+            await sleep((retryAfterSec * 1000) + 500);
+          } else {
+            // başqa səhvdirsə, qısa fasilə verib yenidən cəhd et
+            await sleep(GAP_MS_DEFAULT);
+          }
+          if (attempt >= 3) {
+            results.push({ to: num, ok: false, err: payload });
+          }
+        }
       }
-    });
 
-    console.log(`📊 Nəticə — ✅ ${ok} | ❌ ${fail} | cəmi ${results.length}`, { group: remoteJid });
+      // növbəti nömrəyə keçməzdən əvvəl sürət limiti üçün aralıq
+      await sleep(GAP_MS_DEFAULT);
+    }
+
+    const ok = results.filter(x => x.ok).length;
+    const fail = results.length - ok;
+    console.log(`📊 Nəticə — ✅ ${ok} | ❌ ${fail} | cəmi ${results.length}`);
+
   } catch (e) {
     console.error('Webhook handler error:', e?.response?.data || e.message);
   }
@@ -143,3 +167,4 @@ app.listen(PORT, () => {
   console.log('GROUP_MAP groups:', Object.keys(GROUP_MAP).length);
   console.log('WASENDER_API_KEY   =>', mask(process.env.WASENDER_API_KEY));
 });
+
