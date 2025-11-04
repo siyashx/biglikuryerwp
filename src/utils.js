@@ -1,9 +1,7 @@
-// utils.js
-
-// +994-dan sonra 0-suz operatorlar, 0-dan sonra 0-lu variant lazım deyil
+// +994-dan sonra 0-suz operatorlar, 0-dan sonra 0-lu variant
 const OPS_NOZERO = '(10|50|51|55|70|77|99)';
 
-// "+994 70 585 08 08" və "070 585 08 08" formatları
+// "+994 70 585 08 08" və "070 585 08 08"
 const RE_SPACED = new RegExp(
   String.raw`\b(?:\+?994\s*${OPS_NOZERO}|0\s*${OPS_NOZERO})\s*\d{3}\s*\d{2}\s*\d{2}\b`,
   'g'
@@ -37,4 +35,3 @@ export function extractAllPhones(text) {
   }
   return Array.from(found);
 }
-
