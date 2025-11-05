@@ -71,7 +71,13 @@ app.post('/webhook', async (req, res) => {
 
     // göndərənin MSISDN-ni :device suffix-siz çıxar
     const m = String(participant || '').match(/^(\d+)(?::\d+)?@s\.whatsapp\.net$/);
-    const senderMsisdn = m ? m[1] : '';
+    const senderMsisdn = m ? m[1] : '';   // məsələn: "994556165535"
+
+    // 🔒 YALNIZ bu qayda: mesaj kuryerdəndirsə, hec nə etmə
+    if (senderMsisdn === String(courierMsisdn || '')) {
+      console.log('ℹ️  Skip (message written by courier)', { senderMsisdn, courierMsisdn });
+      return;
+    }
 
     // admin məhdudiyyəti ENV ilə
     const ENFORCE_ADMIN = (process.env.ENFORCE_ADMIN || '0') === '1';
