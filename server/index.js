@@ -139,9 +139,7 @@ app.post('/webhook', async (req, res) => {
         emoji, reactedMsgId, senderDigits: senderDigitsForReaction, courierDigits
       });
 
-      // yalnız KURYER reaksiyasını emal et
-      const isCourier = courierDigits && senderDigitsForReaction.endsWith(courierDigits);
-      if (isCourier && isThumbsUp(emoji) && reactedMsgId) {
+      if (isThumbsUp(emoji) && reactedMsgId) {
         const hit = cacheGet(reactedMsgId);
         if (!hit || !Array.isArray(hit.nums) || !hit.nums.length) {
           console.log('ℹ️  Reaction but no cached numbers for id:', reactedMsgId);
