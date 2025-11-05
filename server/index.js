@@ -77,7 +77,13 @@ app.post('/webhook', async (req, res) => {
     res.status(200).json({ received: true });
 
     const { event, data } = req.body || {};
-    const allowed = new Set(['messages-group.received', 'messages.received', 'messages.upsert']);
+    const allowed = new Set([
+      'messages-group.received',
+      'messages.received',
+      'messages.upsert',
+      'messages.reaction'         // <-- əlavə etdik
+    ]);
+
     if (!allowed.has(String(event))) {
       console.log('ℹ️  Skip (event not allowed):', event);
       return;
@@ -111,6 +117,16 @@ app.post('/webhook', async (req, res) => {
         r.reactionEmoji ||
         '';
 
+      // Reaksiya event-lərində participant çox vaxt reaction.key.participant içində olur
+      const reactionParticipant =
+        r.key?.participant ||
+        r.messageKey?.participant ||
+        r.participant ||
+        participant; // son çarə: top-level
+
+      const senderMsisdnForReaction = parseMsisdnFromSnet(reactionParticipant);
+      const senderDigitsForReaction = normalizeDigits(senderMsisdnForReaction);
+
       const reactedMsgId =
         r.key?.id ||
         r.messageKey?.id ||
@@ -120,11 +136,11 @@ app.post('/webhook', async (req, res) => {
         null;
 
       console.log('🟡 reaction seen', {
-        emoji, reactedMsgId, senderDigits, courierDigits
+        emoji, reactedMsgId, senderDigits: senderDigitsForReaction, courierDigits
       });
 
       // yalnız KURYER reaksiyasını emal et
-      const isCourier = courierDigits && senderDigits.endsWith(courierDigits);
+      const isCourier = courierDigits && senderDigitsForReaction.endsWith(courierDigits);
       if (isCourier && isThumbsUp(emoji) && reactedMsgId) {
         const hit = cacheGet(reactedMsgId);
         if (!hit || !Array.isArray(hit.nums) || !hit.nums.length) {
