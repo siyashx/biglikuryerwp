@@ -23,6 +23,41 @@ function seenRecently(id) {
   return false;
 }
 
+// --- Keş: son mesajların nömrələrini saxla (id -> { nums, text, group, ts })
+const MSG_CACHE = new Map();
+const CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 saat
+
+function cacheSet(id, entry) {
+  if (!id) return;
+  MSG_CACHE.set(id, { ...entry, ts: Date.now() });
+  // sadə təmizləmə
+  const now = Date.now();
+  for (const [k, v] of MSG_CACHE) {
+    if (now - (v.ts || 0) > CACHE_TTL_MS) MSG_CACHE.delete(k);
+  }
+}
+
+function cacheGet(id) {
+  const hit = id ? MSG_CACHE.get(id) : null;
+  if (!hit) return null;
+  if (Date.now() - (hit.ts || 0) > CACHE_TTL_MS) {
+    MSG_CACHE.delete(id);
+    return null;
+  }
+  return hit;
+}
+
+function parseMsisdnFromSnet(jid) {
+  if (!jid) return '';
+  const m = String(jid).match(/^(\d+)(?::\d+)?@s\.whatsapp\.net$/);
+  return m ? m[1] : '';
+}
+function normalizeDigits(s) { return String(s || '').replace(/\D/g, ''); }
+
+function isThumbsUp(emoji) {
+  return emoji === '👍' || emoji === '\uD83D\uDC4D' || emoji === ':thumbsup:';
+}
+
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
 app.post('/webhook', async (req, res) => {
@@ -58,30 +93,67 @@ app.post('/webhook', async (req, res) => {
     const msgId = key.id || env.id;
     const fromMe = !!(key.fromMe || env.fromMe);
 
-    if (!remoteJid || !GROUP_MAP[remoteJid]) {
-      console.log('ℹ️  Skip (unknown group):', { got: remoteJid, known: Object.keys(GROUP_MAP) });
-      return;
-    }
-    if (fromMe) {
-      console.log('ℹ️  Skip (fromMe)');
-      return;
-    }
+    if (!remoteJid || !GROUP_MAP[remoteJid]) { /* skip */ return; }
+    if (fromMe) { /* skip */ return; }
 
     const { admin: adminMsisdn, courier: courierMsisdn } = GROUP_MAP[remoteJid] || {};
+    const senderMsisdn = parseMsisdnFromSnet(participant);
+    const senderDigits = normalizeDigits(senderMsisdn);
+    const courierDigits = normalizeDigits(courierMsisdn);
 
-    // göndərənin MSISDN-ni :device suffix-siz çıxar
-    const m = String(participant || '').match(/^(\d+)(?::\d+)?@s\.whatsapp\.net$/);
-    const senderMsisdn = m ? m[1] : '';
-
-    // admin məhdudiyyəti ENV ilə
+    // ENFORCE_ADMIN varsa, admin deyilsə çıx (sizdə var – eyni qalsın)
     const ENFORCE_ADMIN = (process.env.ENFORCE_ADMIN || '0') === '1';
-    if (ENFORCE_ADMIN && senderMsisdn !== String(adminMsisdn || '')) {
-      console.log('ℹ️  Skip (not admin)', { senderMsisdn, expected: adminMsisdn });
+    if (ENFORCE_ADMIN && senderDigits !== normalizeDigits(adminMsisdn)) {
+      console.log('ℹ️  Skip (not admin)', { senderDigits, expected: adminMsisdn });
       return;
     }
 
     if (seenRecently(msgId)) {
       console.log('ℹ️  Skip (dup id)', msgId);
+      return;
+    }
+
+    // ---- REACTION HANDLER: kuryer 👍 veribsə, "tamamlandı" göndər ----
+    const reaction = (msg.reactionMessage || msg.reactionMessageV2 || null);
+    if (reaction) {
+      const emoji = reaction.text || reaction.emoji || '';
+      const reactedKey = reaction.key || reaction?.messageKey || {};
+      const reactedMsgId = reactedKey.id || reactedKey.stanzaId || null;
+
+      if (courierDigits && senderDigits.endsWith(courierDigits) && isThumbsUp(emoji)) {
+        const hit = cacheGet(reactedMsgId);
+        if (!hit || !Array.isArray(hit.nums) || !hit.nums.length) {
+          console.log('ℹ️  Reaction but no cached numbers for id:', reactedMsgId);
+          return;
+        }
+
+        const courierHuman = courierMsisdn?.startsWith('994') ? ('+' + courierMsisdn) : (courierMsisdn || '');
+        const doneBody = `Sifarişiniz ${courierHuman} tərəfindən TAMAMLANDI.`;
+
+        console.log('✅ Courier 👍 on', reactedMsgId, '=> will notify:', hit.nums);
+
+        const GAP_MS_DEFAULT = Number(process.env.RATE_GAP_MS || 5500);
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+        for (const num of hit.nums) {
+          let ok = false, tries = 0;
+          while (!ok && tries < 3) {
+            tries++;
+            try {
+              const r = await sendText({ to: '+' + num, text: doneBody });
+              console.log('✅ DONE OK =>', num, r);
+              ok = true;
+            } catch (e) {
+              const p = e?.response?.data || e?.message || e;
+              const ra = Number(p?.retry_after || 0);
+              console.error(`❌ DONE FAIL (try ${tries}) =>`, num, p);
+              await sleep((ra > 0 ? ra * 1000 + 500 : GAP_MS_DEFAULT));
+            }
+          }
+          await sleep(GAP_MS_DEFAULT);
+        }
+      }
+      // Reaction işləndi → burada dayandırırıq; mətn emalına düşməsinə ehtiyac yoxdur
       return;
     }
 
@@ -105,6 +177,8 @@ app.post('/webhook', async (req, res) => {
       console.log('⚠️  Nömrə tapılmadı');
       return;
     }
+
+    cacheSet(msgId, { group: remoteJid, nums: recipients, text });
 
     const courierHuman = (courierMsisdn && courierMsisdn.startsWith('994'))
       ? '+' + courierMsisdn
