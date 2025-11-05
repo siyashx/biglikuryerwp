@@ -83,7 +83,6 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
-    // Bəzi payloadlarda mesaj "messages"/"message" altından gəlir
     const env = data?.messages || data?.message || data || {};
     const key = env.key || {};
     const msg = env.message || {};
@@ -93,34 +92,40 @@ app.post('/webhook', async (req, res) => {
     const msgId = key.id || env.id;
     const fromMe = !!(key.fromMe || env.fromMe);
 
-    if (!remoteJid || !GROUP_MAP[remoteJid]) { /* skip */ return; }
-    if (fromMe) { /* skip */ return; }
+    if (!remoteJid || !GROUP_MAP[remoteJid]) return;
+    if (fromMe) return;
 
     const { admin: adminMsisdn, courier: courierMsisdn } = GROUP_MAP[remoteJid] || {};
     const senderMsisdn = parseMsisdnFromSnet(participant);
     const senderDigits = normalizeDigits(senderMsisdn);
     const courierDigits = normalizeDigits(courierMsisdn);
 
-    // ENFORCE_ADMIN varsa, admin deyilsə çıx (sizdə var – eyni qalsın)
-    const ENFORCE_ADMIN = (process.env.ENFORCE_ADMIN || '0') === '1';
-    if (ENFORCE_ADMIN && senderDigits !== normalizeDigits(adminMsisdn)) {
-      console.log('ℹ️  Skip (not admin)', { senderDigits, expected: adminMsisdn });
-      return;
-    }
+    if (seenRecently(msgId)) return;
 
-    if (seenRecently(msgId)) {
-      console.log('ℹ️  Skip (dup id)', msgId);
-      return;
-    }
+    // ---- REACTION HANDLER (ENFORCE_ADMIN tətbiq ETMƏ) ----
+    const r = msg.reactionMessage || msg.reactionMessageV2 || null;
+    if (r) {
+      const emoji =
+        r.text ||
+        r.emoji ||
+        r.reactionEmoji ||
+        '';
 
-    // ---- REACTION HANDLER: kuryer 👍 veribsə, "tamamlandı" göndər ----
-    const reaction = (msg.reactionMessage || msg.reactionMessageV2 || null);
-    if (reaction) {
-      const emoji = reaction.text || reaction.emoji || '';
-      const reactedKey = reaction.key || reaction?.messageKey || {};
-      const reactedMsgId = reactedKey.id || reactedKey.stanzaId || null;
+      const reactedMsgId =
+        r.key?.id ||
+        r.messageKey?.id ||
+        r.key?.stanzaId ||
+        r.messageKey?.stanzaId ||
+        r.messageContextInfo?.stanzaId ||
+        null;
 
-      if (courierDigits && senderDigits.endsWith(courierDigits) && isThumbsUp(emoji)) {
+      console.log('🟡 reaction seen', {
+        emoji, reactedMsgId, senderDigits, courierDigits
+      });
+
+      // yalnız KURYER reaksiyasını emal et
+      const isCourier = courierDigits && senderDigits.endsWith(courierDigits);
+      if (isCourier && isThumbsUp(emoji) && reactedMsgId) {
         const hit = cacheGet(reactedMsgId);
         if (!hit || !Array.isArray(hit.nums) || !hit.nums.length) {
           console.log('ℹ️  Reaction but no cached numbers for id:', reactedMsgId);
@@ -140,8 +145,8 @@ app.post('/webhook', async (req, res) => {
           while (!ok && tries < 3) {
             tries++;
             try {
-              const r = await sendText({ to: '+' + num, text: doneBody });
-              console.log('✅ DONE OK =>', num, r);
+              const rr = await sendText({ to: '+' + num, text: doneBody });
+              console.log('✅ DONE OK =>', num, rr);
               ok = true;
             } catch (e) {
               const p = e?.response?.data || e?.message || e;
@@ -153,7 +158,13 @@ app.post('/webhook', async (req, res) => {
           await sleep(GAP_MS_DEFAULT);
         }
       }
-      // Reaction işləndi → burada dayandırırıq; mətn emalına düşməsinə ehtiyac yoxdur
+      return; // reaksiya emal olundu, mətnə düşmə
+    }
+
+    // ENFORCE_ADMIN: yalnız mətn üçün tətbiq et
+    const ENFORCE_ADMIN = (process.env.ENFORCE_ADMIN || '0') === '1';
+    if (ENFORCE_ADMIN && senderDigits !== normalizeDigits(adminMsisdn)) {
+      console.log('ℹ️  Skip (not admin text)', { senderDigits, expected: adminMsisdn });
       return;
     }
 
@@ -164,26 +175,16 @@ app.post('/webhook', async (req, res) => {
       msg.videoMessage?.caption ||
       '';
 
-    if (!text) {
-      console.log('ℹ️  Skip (no text)');
-      return;
-    }
+    if (!text) { console.log('ℹ️  Skip (no text)'); return; }
 
-    console.log('📝 text preview:', text.slice(0, 200));
-
-    // BÜTÜN nömrələri çıxar
     const recipients = extractAllPhones(text);
-    if (!recipients.length) {
-      console.log('⚠️  Nömrə tapılmadı');
-      return;
-    }
+    if (!recipients.length) { console.log('⚠️  Nömrə tapılmadı'); return; }
 
+    // SİFARİŞ MESAJINI KEŞLƏ
     cacheSet(msgId, { group: remoteJid, nums: recipients, text });
+    console.log('🟩 cached', { msgId, count: recipients.length });
 
-    const courierHuman = (courierMsisdn && courierMsisdn.startsWith('994'))
-      ? '+' + courierMsisdn
-      : (courierMsisdn || '');
-
+    const courierHuman = courierMsisdn?.startsWith('994') ? ('+' + courierMsisdn) : (courierMsisdn || '');
     const body = `Sifarişiniz ${courierHuman} tərəfindən qəbul edildi.`;
 
     console.log('📤 Göndəriləcək nömrələr:', recipients);
