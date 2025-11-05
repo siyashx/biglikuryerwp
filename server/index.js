@@ -23,6 +23,38 @@ function seenRecently(id) {
   return false;
 }
 
+function parseMsisdnFromSnet(jid) {
+  if (!jid) return '';
+  const m = String(jid).match(/^(\d+)(?::\d+)?@s\.whatsapp\.net$/);
+  return m ? m[1] : '';
+}
+
+// JSON içində ilk "...@s.whatsapp.net" dəyərini tap (rekursiv)
+function findFirstSnetJidDeep(any) {
+  if (any == null) return null;
+  if (typeof any === 'string') {
+    return /^\d+(?::\d+)?@s\.whatsapp\.net$/.test(any) ? any : null;
+  }
+  if (Array.isArray(any)) {
+    for (const v of any) {
+      const hit = findFirstSnetJidDeep(v);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (typeof any === 'object') {
+    for (const k of Object.keys(any)) {
+      const hit = findFirstSnetJidDeep(any[k]);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+function normalizeDigits(s) {
+  return String(s || '').replace(/\D/g, '');
+}
+
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
 app.post('/webhook', async (req, res) => {
@@ -49,33 +81,53 @@ app.post('/webhook', async (req, res) => {
     }
 
     // Bəzi payloadlarda mesaj "messages"/"message" altından gəlir
-    const env = data?.messages || data?.message || data || {};
+    // Bəzi payloadlar massiv gətirə bilər: data.messages = [ { key, message, ... } ]
+    let envRaw = (req.body?.data || {});
+    let env = envRaw;
+
+    // Prioritet: messages[0] -> message -> data (flatten)
+    if (Array.isArray(envRaw.messages) && envRaw.messages.length > 0) {
+      env = envRaw.messages[0];
+    } else if (envRaw.message) {
+      env = envRaw.message;
+    }
+
+    // key və message obyektlərini götür
     const key = env.key || {};
     const msg = env.message || {};
 
-    const remoteJid = key.remoteJid || env.remoteJid;
-    const participant = key.participant || env.participant; // "994...[:device]@s.whatsapp.net"
-    const msgId = key.id || env.id;
-    const fromMe = !!(key.fromMe || env.fromMe);
+    // remoteJid və fromMe
+    const remoteJid = key.remoteJid || env.remoteJid || envRaw.remoteJid;
+    const fromMe = !!(key.fromMe || env.fromMe || envRaw.fromMe);
 
-    if (!remoteJid || !GROUP_MAP[remoteJid]) {
-      console.log('ℹ️  Skip (unknown group):', { got: remoteJid, known: Object.keys(GROUP_MAP) });
-      return;
-    }
-    if (fromMe) {
-      console.log('ℹ️  Skip (fromMe)');
-      return;
-    }
+    // Qrup tanınmırsa və ya özümüzdəndirsə çıx
+    if (!remoteJid || !GROUP_MAP[remoteJid]) return;
+    if (fromMe) return;
 
     const { admin: adminMsisdn, courier: courierMsisdn } = GROUP_MAP[remoteJid] || {};
 
-    // göndərənin MSISDN-ni :device suffix-siz çıxar
-    const m = String(participant || '').match(/^(\d+)(?::\d+)?@s\.whatsapp\.net$/);
-    const senderMsisdn = m ? m[1] : '';   // məsələn: "994556165535"
+    // 1-ci cəhd: key.participant
+    let senderMsisdn = parseMsisdnFromSnet(key.participant || env.participant);
 
-    // 🔒 YALNIZ bu qayda: mesaj kuryerdəndirsə, hec nə etmə
-    if (senderMsisdn === String(courierMsisdn || '')) {
-      console.log('ℹ️  Skip (message written by courier)', { senderMsisdn, courierMsisdn });
+    // 2-ci cəhd: bütün body içindən ilk s.whatsapp.net JID tap
+    if (!senderMsisdn) {
+      const deep = findFirstSnetJidDeep(req.body);
+      senderMsisdn = parseMsisdnFromSnet(deep);
+    }
+
+    // 3-cü cəhd: contextInfo.participant kimi bəzi künc hallar
+    if (!senderMsisdn) {
+      const ci = msg?.extendedTextMessage?.contextInfo || msg?.messageContextInfo;
+      senderMsisdn = parseMsisdnFromSnet(ci?.participant);
+    }
+
+    // Normalizə
+    const senderDigits = normalizeDigits(senderMsisdn);
+    const courierDigits = normalizeDigits(courierMsisdn);
+
+    // 🔒 YALNIZ bu qayda: mesaj KURYERdəndirsə, heç nə etmə
+    if (courierDigits && senderDigits.endsWith(courierDigits)) {
+      console.log('ℹ️  Skip (message written by courier)', { senderDigits, courierDigits });
       return;
     }
 
