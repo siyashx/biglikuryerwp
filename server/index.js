@@ -147,7 +147,10 @@ app.post('/webhook', async (req, res) => {
         }
 
         const courierHuman = courierMsisdn?.startsWith('994') ? ('+' + courierMsisdn) : (courierMsisdn || '');
-        const doneBody = `Sifarişiniz ${courierHuman} tərəfindən TAMAMLANDI.`;
+        const doneBody =
+          `Sifarişiniz tamamlandı ✅\n` +
+          `Kuryer ${courierHuman} 📞\n\n` +
+          `*Hər növ Kuryer xidməti üçün* www.biglikuryer.az`;
 
         console.log('✅ Courier 👍 on', reactedMsgId, '=> will notify:', hit.nums);
 
@@ -199,7 +202,10 @@ app.post('/webhook', async (req, res) => {
     console.log('🟩 cached', { msgId, count: recipients.length });
 
     const courierHuman = courierMsisdn?.startsWith('994') ? ('+' + courierMsisdn) : (courierMsisdn || '');
-    const body = `Sifarişiniz ${courierHuman} tərəfindən qəbul edildi.`;
+    const body =
+      `Sifarişinizə bağlı kuryer təyin edildi 🛵\n` +
+      `Kuryer ${courierHuman} 📞\n\n` +
+      `*Hər növ Kuryer xidməti üçün* www.biglikuryer.az`;
 
     console.log('📤 Göndəriləcək nömrələr:', recipients);
 
