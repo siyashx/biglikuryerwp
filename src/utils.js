@@ -1,3 +1,5 @@
+// src/utils.js
+
 // +994-dan sonra 0-suz operatorlar, 0-dan sonra 0-lu variant
 const OPS_NOZERO = '(10|50|51|55|70|77|99)';
 
