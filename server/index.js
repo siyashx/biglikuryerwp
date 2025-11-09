@@ -153,33 +153,43 @@ async function fetchPushTargets(senderUserId = 0) {
 }
 async function sendPushNotification(ids, title, body) {
   const input = (Array.isArray(ids) ? ids : [ids]).map(x => String(x || '').trim());
+  // yalnız UUID formatında olanları saxla + dedup
   const valid = [...new Set(input.filter(isValidUUID))];
   if (!valid.length) return;
-  // yalnız appVersion === 25
-  let v25Ids = [];
-  try {
-    const usersRes = await axios.get(`${TARGET_API_BASE}/api/v5/user`, { timeout: 15000 });
-    const v25 = new Set((usersRes?.data || [])
-      .filter(u => Number(u?.appVersion) === 25 && u?.oneSignal && isValidUUID(String(u.oneSignal)))
-      .map(u => String(u.oneSignal).trim()));
-    v25Ids = valid.filter(id => v25.has(id));
-  } catch { return; }
-  if (!v25Ids.length) return;
 
-  const payload = {
+  const payloadBase = {
     app_id: ONE_SIGNAL_APP_ID,
-    include_subscription_ids: v25Ids,
     headings: { en: title },
     contents: { en: body },
     android_channel_id: ANDROID_CHANNEL_ID,
     data: { screen: 'OrderGroup', groupId: 1 },
   };
-  try {
-    await axios.post('https://onesignal.com/api/v1/notifications', payload, {
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${ONE_SIGNAL_REST_API_KEY}` },
-      timeout: 15000,
-    });
-  } catch { }
+
+  // OneSignal include_subscription_ids limiti: 2000
+  const CHUNK = 2000;
+  const batches = [];
+  for (let i = 0; i < valid.length; i += CHUNK) {
+    batches.push(valid.slice(i, i + CHUNK));
+  }
+
+  for (const batch of batches) {
+    const payload = { ...payloadBase, include_subscription_ids: batch };
+    try {
+      await axios.post(
+        'https://onesignal.com/api/v1/notifications',
+        payload,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Basic ${ONE_SIGNAL_REST_API_KEY}`,
+          },
+          timeout: 15000,
+        }
+      );
+    } catch (e) {
+      console.log(e.message)
+    }
+  }
 }
 
 /* ---------------- Bigli tərəfinə aid keşi (reaction üçün) ---------------- */
