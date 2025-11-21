@@ -155,15 +155,21 @@ async function sendPushNotification(ids, title, body) {
   const input = (Array.isArray(ids) ? ids : [ids]).map(x => String(x || '').trim());
   const valid = [...new Set(input.filter(isValidUUID))];
   if (!valid.length) return;
-  // yalnız appVersion === 25
+
+  // yalnız appVersion >= 25
   let v25Ids = [];
   try {
     const usersRes = await axios.get(`${TARGET_API_BASE}/api/v5/user`, { timeout: 15000 });
-    const v25 = new Set((usersRes?.data || [])
-      .filter(u => Number(u?.appVersion) === 25 && u?.oneSignal && isValidUUID(String(u.oneSignal)))
-      .map(u => String(u.oneSignal).trim()));
+    const v25 = new Set(
+      (usersRes?.data || [])
+        .filter(u => Number(u?.appVersion) >= 25 && u?.oneSignal && isValidUUID(String(u.oneSignal)))
+        .map(u => String(u.oneSignal).trim())
+    );
     v25Ids = valid.filter(id => v25.has(id));
-  } catch { return; }
+  } catch {
+    return;
+  }
+
   if (!v25Ids.length) return;
 
   const payload = {
@@ -174,13 +180,20 @@ async function sendPushNotification(ids, title, body) {
     android_channel_id: ANDROID_CHANNEL_ID,
     data: { screen: 'OrderGroup', groupId: 1 },
   };
+
   try {
     await axios.post('https://onesignal.com/api/v1/notifications', payload, {
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${ONE_SIGNAL_REST_API_KEY}` },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Basic ${ONE_SIGNAL_REST_API_KEY}`,
+      },
       timeout: 15000,
     });
-  } catch { }
+  } catch {
+    // silently ignore
+  }
 }
+
 
 /* ---------------- Bigli tərəfinə aid keşi (reaction üçün) ---------------- */
 const MSG_CACHE = new Map();
@@ -261,9 +274,9 @@ app.post('/webhook', async (req, res) => {
       if (await isDuplicateChatMessage(String(textBody))) { dlog('WaBridge: duplicate text'); return; }
 
       const normalizedPhone = (parsePhoneFromSNetJid(findFirstSnetJidDeep(req.body)) ||
-          parsePhoneFromSNetJid(participant) ||
-          parseDigitsFromLid(participant) || '');
-        const phonePrefixed = normalizedPhone ? `+${normalizedPhone}`.replace('++', '+') : '';
+        parsePhoneFromSNetJid(participant) ||
+        parseDigitsFromLid(participant) || '');
+      const phonePrefixed = normalizedPhone ? `+${normalizedPhone}`.replace('++', '+') : '';
 
       const chat = {
         id: Date.now(), groupId: "0", userId: 2, username: 'Sifariş Qrupu İstifadəçisi',
